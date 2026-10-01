@@ -1,0 +1,96 @@
+id: github-repo-health-digest
+namespace: company.devops
+
+extend:
+  title: Daily GitHub Repository Health & PR Digest
+  description: |
+    Automate repository monitoring and team reporting.
+    This workflow queries the public GitHub REST API for any target repository,
+    processes recent open pull requests and issues using an inline Python script,
+    and produces a structured summary report.
+    
+    Prerequisites:
+    - Internet access to api.github.com
+    
+    Quick start:
+    1. Set the target repository owner and name in the flow inputs.
+    2. Execute the flow or enable the daily schedule trigger.
+    
+    Expected outputs:
+    - Summary log with pending pull requests and open issue counts.
+  tags:
+    - DevOps
+    - Scripting
+    - Python
+  ee: false
+  demo: true
+  metaDescription: Query GitHub REST API and summarize repo health and open PRs with Python.
+
+inputs:
+  - id: repo_owner
+    type: STRING
+    description: GitHub organization or username (e.g., 'kestra-io')
+    defaults: kestra-io
+
+  - id: repo_name
+    type: STRING
+    description: GitHub repository name (e.g., 'kestra')
+    defaults: kestra
+
+tasks:
+  - id: fetch_and_analyze_repo
+    type: io.kestra.plugin.scripts.python.Script
+    description: Fetch repository statistics and PR data from GitHub REST API
+    beforeCommands:
+      - pip install requests
+    script: |
+      import os
+      import requests
+      from kestra import Kestra
+
+      owner = "{{ inputs.repo_owner }}"
+      repo = "{{ inputs.repo_name }}"
+
+      base_url = f"https://api.github.com/repos/{owner}/{repo}"
+      headers = {"Accept": "application/vnd.github.v3+json"}
+
+      # Fetch repo basic info
+      repo_resp = requests.get(base_url, headers=headers)
+      if repo_resp.status_code != 200:
+          raise RuntimeError(f"Failed to fetch repo info: {repo_resp.status_code}")
+      repo_data = repo_resp.json()
+
+      # Fetch open pull requests
+      prs_resp = requests.get(f"{base_url}/pulls?state=open&per_page=5", headers=headers)
+      prs_data = prs_resp.json() if prs_resp.status_code == 200 else []
+
+      # Compute metrics
+      stars = repo_data.get("stargazers_count", 0)
+      open_issues_count = repo_data.get("open_issues_count", 0)
+      recent_prs = [
+          {"number": pr["number"], "title": pr["title"], "author": pr["user"]["login"]}
+          for pr in prs_data
+      ]
+
+      print(f"--- Repository Digest: {owner}/{repo} ---")
+      print(f"Stars: {stars} | Open Issues/PRs: {open_issues_count}")
+      print(f"Latest {len(recent_prs)} Pull Requests:")
+      for pr in recent_prs:
+          print(f"  #{pr['number']}: {pr['title']} (by @{pr['author']})")
+
+      # Export outputs to Kestra run context
+      Kestra.outputs({
+          "repo": f"{owner}/{repo}",
+          "stars": stars,
+          "open_issues_count": open_issues_count,
+          "recent_prs_count": len(recent_prs)
+      })
+
+  - id: log_summary
+    type: io.kestra.plugin.core.log.Log
+    message: "Report complete for {{ outputs.fetch_and_analyze_repo.vars.repo }}. Stars: {{ outputs.fetch_and_analyze_repo.vars.stars }}, Issues/PRs: {{ outputs.fetch_and_analyze_repo.vars.open_issues_count }}"
+
+triggers:
+  - id: daily_schedule
+    type: io.kestra.plugin.core.trigger.Schedule
+    cron: "0 9 * * *"
